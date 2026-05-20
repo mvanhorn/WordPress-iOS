@@ -111,20 +111,29 @@ final class MediaLibraryViewModel: ObservableObject {
     /// (both success and failure paths) for pagination safety.
     @Published private(set) var pendingDeleteIDs: Set<Int64> = []
 
-    /// Bulk-share state machine. `.preparing` while
-    /// `MediaDetailShareService.downloadForSharing(items:)` runs. Reset to
-    /// `.idle` on completion, failure, cancellation, or `exitSelectionMode()`.
-    @Published private(set) var bulkShareState: BulkShareState = .idle
-
     /// Identity for the currently-active bulk-share download. The view's
     /// `.task(id: bulkShareRequest?.id)` modifier owns the download task;
-    /// flipping the id to nil cancels it cooperatively.
+    /// flipping the id to nil cancels it cooperatively. The preparing-vs-idle
+    /// UI state is derived from this (see `isPreparingBulkShare`), so the two
+    /// can never drift out of lockstep.
     @Published private(set) var bulkShareRequest: BulkShareRequest?
+
+    /// True while a bulk-share download is in flight. Derived from
+    /// `bulkShareRequest` so there is a single source of truth.
+    var isPreparingBulkShare: Bool { bulkShareRequest != nil }
 
     /// Activity-sheet payload. Set by `performBulkShare` on success;
     /// presented via `.sheet(item:)`. Nilled in `reportShareDismissed` or
     /// `exitSelectionMode`.
     @Published var sharePayload: MediaDetailViewModel.SharePayload?
+
+    /// Bulk-delete failure message, presented as an alert. Set when the
+    /// confirmed delete fails wholesale or partially; cleared by the view.
+    @Published var bulkDeleteErrorMessage: String?
+
+    /// Bulk-share failure message, presented as an alert. Set when the share
+    /// download fails or no selected item can be prepared; cleared by the view.
+    @Published var bulkShareErrorMessage: String?
 
     /// Toggle-time payload snapshot, keyed by media id. Survives
     /// `loadItems` rebuilds of `resolvedMediaByID`, so a selection that
@@ -153,8 +162,6 @@ final class MediaLibraryViewModel: ObservableObject {
             selectedMediaSnapshots[id]?.mimeType.hasPrefix("image/") == true
         }
     }
-
-    enum BulkShareState: Equatable { case idle, preparing }
 
     struct BulkShareRequest: Identifiable {
         let id = UUID()
@@ -348,13 +355,13 @@ final class MediaLibraryViewModel: ObservableObject {
     }
 
     func exitSelectionMode() {
-        // Reset bulkShareState alongside bulkShareRequest. Without this, a
-        // Done tap before SwiftUI enters `.task(id:)`'s body would leave
-        // bulkShareState stuck at .preparing. Nils sharePayload too, closes
-        // the race where downloads finish and the activity sheet is about
-        // to present when the user taps Done.
-        bulkShareState = .idle
+        // Nil bulkShareRequest (which also flips isPreparingBulkShare back to
+        // false). Without this, a Done tap before SwiftUI enters `.task(id:)`'s
+        // body would leave the share UI stuck in its preparing state. Nils
+        // sharePayload too, closing the race where downloads finish and the
+        // activity sheet is about to present when the user taps Done.
         bulkShareRequest = nil
+        sharePayload?.cleanupTemporaryFiles()
         sharePayload = nil
         isSelectionModeActive = false
         selectedIDs.removeAll()
@@ -384,7 +391,9 @@ final class MediaLibraryViewModel: ObservableObject {
     /// Fire-and-forget bulk delete. Selection mode exits immediately on
     /// confirm; per-cell dim+spinner indicates in-flight deletes. Both
     /// success and failure clear the pending marker in `performDelete`'s
-    /// `defer` (both success and failure paths) for pagination safety.
+    /// `defer` (both success and failure paths) for pagination safety. A
+    /// wholesale or partial failure surfaces `bulkDeleteErrorMessage` (the
+    /// detail screen has an equivalent delete-failure alert).
     func confirmBulkDelete() async {
         guard let client else { return }
         let ids = Array(selectedIDs)
@@ -399,6 +408,7 @@ final class MediaLibraryViewModel: ObservableObject {
         } catch {
             Loggers.mediaLibrary.error("Bulk delete: client resolve failed: \(error)")
             pendingDeleteIDs.subtract(ids)
+            bulkDeleteErrorMessage = Strings.selectionDeleteFailedMessage
             return
         }
 
@@ -426,6 +436,9 @@ final class MediaLibraryViewModel: ObservableObject {
         if successCount > 0 {
             tracker.track(.mediaLibraryDeletedItems(count: successCount))
         }
+        if successCount < ids.count {
+            bulkDeleteErrorMessage = Strings.selectionDeleteFailedMessage
+        }
     }
 
     /// One delete attempt. Returns `true` on success. `defer` clears the
@@ -439,6 +452,106 @@ final class MediaLibraryViewModel: ObservableObject {
         } catch {
             Loggers.mediaLibrary.error("Bulk delete failed for id \(id): \(error)")
             return false
+        }
+    }
+
+    // MARK: - Bulk share (M5)
+
+    /// Starts a bulk-share preparation. Builds `DownloadableMediaItem`s
+    /// from `selectedMediaSnapshots` (NOT `resolvedMediaByID`, the snapshot
+    /// map survives refresh and pagination). Preflight keeps only items with
+    /// an absolute http/https URL with a host. Fires
+    /// `.siteMediaShareTapped(count:)` before the download starts, using the
+    /// actually-prepared count.
+    func startBulkShare() {
+        guard !selectedIDs.isEmpty, !isPreparingBulkShare else { return }
+        let ids = Array(selectedIDs)
+        let items: [DownloadableMediaItem] = ids.compactMap { id in
+            guard let media = selectedMediaSnapshots[id],
+                let url = URL(string: media.sourceUrl),
+                let scheme = url.scheme?.lowercased(),
+                scheme == "http" || scheme == "https",
+                url.host?.isEmpty == false
+            else { return nil }
+            return DownloadableMediaItem(
+                sourceUrl: url,
+                mimeType: media.mimeType,
+                suggestedFilename: MediaShareFilename.suggested(for: media)
+            )
+        }
+
+        // When no selected item yields a shareable URL the tap would otherwise
+        // do nothing (no spinner, no sheet); surface an alert instead. A partial
+        // drop still proceeds: the activity sheet shows the prepared subset, which
+        // is its own feedback.
+        guard !items.isEmpty else {
+            Loggers.mediaLibrary.warning(
+                "Bulk share: tap produced 0 preparable items from \(ids.count) selected ids"
+            )
+            bulkShareErrorMessage = Strings.selectionShareNothingMessage
+            return
+        }
+
+        if items.count != ids.count {
+            Loggers.mediaLibrary.warning(
+                "Bulk share: \(ids.count - items.count) selected items dropped (missing snapshot or unparseable sourceUrl); proceeding with \(items.count)"
+            )
+        }
+        tracker.track(.siteMediaShareTapped(count: items.count))
+        bulkShareRequest = BulkShareRequest(items: items)
+    }
+
+    /// Runs the bulk-share download. Called from the view's
+    /// `.task(id: bulkShareRequest?.id)` modifier; SwiftUI auto-cancels on
+    /// id change (e.g., when `exitSelectionMode()` clears the request).
+    /// Cleanup and `sharePayload` publication are request-id-scoped: a
+    /// stale cancelled task that unwinds after a newer request started
+    /// will NOT clobber the newer request's state.
+    func performBulkShare(_ request: BulkShareRequest) async {
+        defer {
+            if bulkShareRequest?.id == request.id {
+                bulkShareRequest = nil
+            }
+        }
+        guard let shareService else { return }
+        do {
+            let result = try await shareService.downloadForSharing(items: request.items)
+            do {
+                try Task.checkCancellation()
+            } catch {
+                result.cleanup?()
+                throw error
+            }
+            guard bulkShareRequest?.id == request.id else {
+                result.cleanup?()
+                return
+            }
+            sharePayload = .init(urls: result.urls, cleanup: result.cleanup)
+        } catch is CancellationError {
+            // expected, Done cancelled mid-download
+        } catch let urlError as URLError where urlError.code == .cancelled {
+            // URLSession surfaces cancellation as URLError(.cancelled), not CancellationError
+        } catch {
+            // The download is an atomic batch (one failure discards the whole
+            // batch dir), so surface the failure instead of silently reverting
+            // the spinner to the share icon, mirroring the detail screen's
+            // share-failure alert.
+            Loggers.mediaLibrary.error("Bulk share download failed: \(error)")
+            if bulkShareRequest?.id == request.id {
+                bulkShareErrorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    /// Called from the `ShareSheetRepresentable` completion handler.
+    /// V1 bulk parity: completed share exits selection mode; cancelled
+    /// activity sheet keeps selection intact for retry. Neither path fires
+    /// `.mediaLibrarySharedItemLink`; that event is V1-single-item only.
+    func reportShareDismissed(completed: Bool) {
+        sharePayload?.cleanupTemporaryFiles()
+        sharePayload = nil
+        if completed {
+            exitSelectionMode()
         }
     }
 

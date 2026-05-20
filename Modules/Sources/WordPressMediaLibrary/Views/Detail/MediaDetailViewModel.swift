@@ -30,9 +30,25 @@ final class MediaDetailViewModel: ObservableObject {
     private var didFireOpen = false
     private var inFlightSaveTask: [MediaEditableField: Task<Void, Never>] = [:]
 
+    /// Payload presented in `UIActivityViewController`. `cleanup` is the
+    /// service-supplied closure that removes the temp scope owning `urls`;
+    /// `cleanupTemporaryFiles()` invokes it iff non-nil. Ownership is
+    /// explicit — never inferred from URL paths — so a custom share service
+    /// that returns URLs from outside its own scope cannot accidentally
+    /// trigger deletion.
     struct SharePayload: Identifiable {
         let id = UUID()
         let urls: [URL]
+        private let cleanup: (@Sendable () -> Void)?
+
+        init(urls: [URL], cleanup: (@Sendable () -> Void)? = nil) {
+            self.urls = urls
+            self.cleanup = cleanup
+        }
+
+        func cleanupTemporaryFiles() {
+            cleanup?()
+        }
     }
 
     init(
@@ -182,9 +198,9 @@ final class MediaDetailViewModel: ObservableObject {
             return
         }
         do {
-            let urls = try await shareService.downloadForSharing(items: [item])
+            let result = try await shareService.downloadForSharing(items: [item])
             isSharing = false
-            sharePayload = SharePayload(urls: urls)
+            sharePayload = SharePayload(urls: result.urls, cleanup: result.cleanup)
         } catch {
             Loggers.mediaLibrary.error("Media share failed for id \(display.id): \(error)")
             isSharing = false
@@ -193,6 +209,7 @@ final class MediaDetailViewModel: ObservableObject {
     }
 
     func reportShareDismissed(completed: Bool) {
+        sharePayload?.cleanupTemporaryFiles()
         sharePayload = nil
         if completed {
             tracker.track(.mediaLibrarySharedItemLink)

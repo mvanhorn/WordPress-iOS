@@ -539,6 +539,18 @@ enum Strings {
         comment: "Destructive action label inside the bulk-delete confirmation dialog."
     )
 
+    static let selectionDeleteFailedMessage = NSLocalizedString(
+        "mediaLibrary.selection.deleteFailed.message",
+        value: "Some items couldn't be deleted. Please try again.",
+        comment: "Alert message shown when a bulk delete fails for some or all of the selected items."
+    )
+
+    static let selectionShareNothingMessage = NSLocalizedString(
+        "mediaLibrary.selection.shareNothing.message",
+        value: "The selected items can't be shared.",
+        comment: "Alert message shown when none of the selected items has a shareable media URL."
+    )
+
     static let selectionDeleteAccessibilityLabel = NSLocalizedString(
         "mediaLibrary.selection.delete.accessibilityLabel",
         value: "Delete selected items",

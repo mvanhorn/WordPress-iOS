@@ -13,6 +13,29 @@ final class RecordingMediaTracker: MediaTracker {
     func track(_ event: MediaTrackerEvent) { events.append(event) }
 }
 
+// MARK: - Fake share service
+
+@MainActor
+final class FakeShareService: MediaDetailShareService {
+    enum Outcome {
+        case success(urls: [URL], cleanup: (@Sendable () -> Void)?)
+        case throwing(Error)
+    }
+
+    var outcome: Outcome = .success(urls: [], cleanup: nil)
+    private(set) var calls: [[DownloadableMediaItem]] = []
+
+    func downloadForSharing(items: [DownloadableMediaItem]) async throws -> BulkShareDownloadResult {
+        calls.append(items)
+        switch outcome {
+        case .success(let urls, let cleanup):
+            return BulkShareDownloadResult(urls: urls, cleanup: cleanup)
+        case .throwing(let error):
+            throw error
+        }
+    }
+}
+
 // MARK: - Fake upload transports
 
 actor FakeUploadTransport: MediaUploadTransport {
