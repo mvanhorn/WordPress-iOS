@@ -521,22 +521,13 @@ enum Strings {
         comment: "Bottom toolbar title when 2+ items are selected (mixed or non-image)."
     )
 
-    static let selectionDeleteConfirmationOne = NSLocalizedString(
-        "mediaLibrary.selection.deleteConfirmation.one",
-        value: "Are you sure you want to permanently delete this item?",
-        comment: "Confirmation dialog title when deleting exactly one item from the V2 Media Library."
-    )
-
+    // The single-item delete-confirmation title and the destructive "Delete"
+    // action label are shared with the detail screen (`detailDeleteConfirmation`
+    // / `detailDeleteAction`); only the multi-item confirmation is selection-only.
     static let selectionDeleteConfirmationMany = NSLocalizedString(
         "mediaLibrary.selection.deleteConfirmation.many",
         value: "Are you sure you want to permanently delete these items?",
         comment: "Confirmation dialog title when deleting multiple items from the V2 Media Library."
-    )
-
-    static let selectionDeleteAction = NSLocalizedString(
-        "mediaLibrary.selection.deleteAction",
-        value: "Delete",
-        comment: "Destructive action label inside the bulk-delete confirmation dialog."
     )
 
     static let selectionDeleteFailedMessage = NSLocalizedString(

@@ -23,6 +23,7 @@ struct MediaLibraryView: View {
     @State private var retryToken = 0
     @State private var activePicker: ActivePicker?
     @State private var isPresentingUploads = false
+    @State private var isPresentingDeleteConfirm = false
 
     private enum ActivePicker: Hashable, Identifiable {
         case photoLibrary, takePhoto, takeVideo, chooseFile
@@ -30,27 +31,43 @@ struct MediaLibraryView: View {
         var id: Self { self }
     }
 
+    private var deleteConfirmMessage: String {
+        let count = viewModel.selectedIDs.count
+        return count == 1 ? Strings.detailDeleteConfirmation : Strings.selectionDeleteConfirmationMany
+    }
+
+    /// `.alert(isPresented:)` needs a Bool binding; these bridge the optional
+    /// error messages to one and clear the message when the alert dismisses.
+    private var bulkDeleteErrorBinding: Binding<Bool> {
+        Binding(
+            get: { viewModel.bulkDeleteErrorMessage != nil },
+            set: { if !$0 { viewModel.bulkDeleteErrorMessage = nil } }
+        )
+    }
+    private var bulkShareErrorBinding: Binding<Bool> {
+        Binding(
+            get: { viewModel.bulkShareErrorMessage != nil },
+            set: { if !$0 { viewModel.bulkShareErrorMessage = nil } }
+        )
+    }
+
     var body: some View {
         ZStack {
             if searchText.isEmpty {
                 VStack(spacing: 0) {
                     if let summary = viewModel.bannerSummary {
-                        BannerView(summary: summary) {
-                            isPresentingUploads = true
-                        }
+                        BannerView(
+                            summary: summary,
+                            onTap: viewModel.isSelectionModeActive
+                                ? nil
+                                : {
+                                    isPresentingUploads = true
+                                }
+                        )
                     }
-                    // Tapping a cell pushes the detail screen through the
-                    // app-injected UIKit navigator. The grid is hosted in a
-                    // UIKit `UINavigationController` (no SwiftUI
-                    // `NavigationStack` ancestor), so `pushDetail` wraps the
-                    // SwiftUI screen in a `UIHostingController` and pushes it
-                    // onto the outer nav controller at tap time.
-                    MediaGridView(
-                        items: viewModel.displayItems,
-                        isAspectRatioMode: isAspectRatioMode,
-                        canSelect: { viewModel.canOpenDetail(for: $0) },
-                        onSelect: { pushDetail(for: $0) }
-                    )
+                    MediaGridView(items: viewModel.displayItems, isAspectRatioMode: isAspectRatioMode) { item in
+                        cellContent(for: item)
+                    }
                     .refreshable { await viewModel.refresh() }
                     .overlay { libraryOverlay }
                 }
@@ -80,8 +97,69 @@ struct MediaLibraryView: View {
         .autocorrectionDisabled()
         .textInputAutocapitalization(.never)
         .toolbar {
-            filterMenu
-            addMenu
+            if viewModel.isSelectionModeActive {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button(Strings.commonDone) { viewModel.exitSelectionMode() }
+                }
+                ToolbarItemGroup(placement: .bottomBar) {
+                    if viewModel.detailCapabilities?.supportsDeletion == true {
+                        Button {
+                            isPresentingDeleteConfirm = true
+                        } label: {
+                            Image(systemName: "trash")
+                        }
+                        .accessibilityLabel(Strings.selectionDeleteAccessibilityLabel)
+                        .disabled(viewModel.selectedIDs.isEmpty || viewModel.isPreparingBulkShare)
+                    } else {
+                        Image(systemName: "trash")
+                            .hidden()
+                            .accessibilityHidden(true)
+                    }
+                    Spacer()
+                    Text(viewModel.selectionToolbarTitle).font(.headline)
+                    Spacer()
+                    shareToolbarButton
+                }
+            } else {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button(Strings.selectionSelect) { viewModel.enterSelectionMode() }
+                        // Enablement tracks the visible (kind-filtered) grid, not
+                        // the unfiltered item set, so Select can't enter a Done-only
+                        // dead end over an empty filtered grid.
+                        .disabled(!viewModel.canEnterSelectionMode)
+                }
+                filterMenu
+                addMenu
+            }
+        }
+        .navigationBarBackButtonHidden(viewModel.isSelectionModeActive)
+        .confirmationDialog(
+            deleteConfirmMessage,
+            isPresented: $isPresentingDeleteConfirm,
+            titleVisibility: .visible
+        ) {
+            Button(Strings.detailDeleteAction, role: .destructive) {
+                Task { await viewModel.confirmBulkDelete() }
+            }
+            Button(Strings.commonCancel, role: .cancel) {}
+        }
+        .alert(
+            Strings.detailUnableToDeleteTitle,
+            isPresented: bulkDeleteErrorBinding,
+            presenting: viewModel.bulkDeleteErrorMessage
+        ) { _ in
+            Button(Strings.commonOK, role: .cancel) { viewModel.bulkDeleteErrorMessage = nil }
+        } message: {
+            Text($0)
+        }
+        .alert(
+            Strings.detailUnableToShareTitle,
+            isPresented: bulkShareErrorBinding,
+            presenting: viewModel.bulkShareErrorMessage
+        ) { _ in
+            Button(Strings.commonOK, role: .cancel) { viewModel.bulkShareErrorMessage = nil }
+        } message: {
+            Text($0)
         }
         // Present the Uploads queue as a sheet rather than a push. It's a
         // self-contained management surface (its own toolbar + bulk menu), and
@@ -108,6 +186,20 @@ struct MediaLibraryView: View {
                         }
                     }
             }
+        }
+        .sheet(item: $viewModel.sharePayload) { payload in
+            ShareSheetRepresentable(urls: payload.urls) { completed in
+                // Clean up via the captured `payload`, not viewModel.sharePayload:
+                // an interactive swipe-dismiss can nil the published binding
+                // before this handler runs, which would otherwise skip cleanup
+                // and leak the media-share-<UUID> temp dir.
+                payload.cleanupTemporaryFiles()
+                viewModel.reportShareDismissed(completed: completed)
+            }
+        }
+        .task(id: viewModel.bulkShareRequest?.id) { [request = viewModel.bulkShareRequest] in
+            guard let request else { return }
+            await viewModel.performBulkShare(request)
         }
         .sheet(item: $activePicker) { picker in
             switch picker {
@@ -158,6 +250,53 @@ struct MediaLibraryView: View {
                 if let option = externalPickerOptions.first(where: { $0.id == id }) {
                     option.sheetContent(viewModel)
                 }
+            }
+        }
+    }
+
+    /// Wraps openable grid cells in the interaction that matches the current mode.
+    /// Placeholder cells (.fetching / .missing / .failed) stay static so taps
+    /// don't push or select a half-baked detail screen.
+    @ViewBuilder private func cellContent(for item: MediaGridItem) -> some View {
+        let isPendingDelete = viewModel.pendingDeleteIDs.contains(item.id)
+
+        if isPendingDelete {
+            MediaGridCell(item: item, isAspectRatioMode: isAspectRatioMode)
+                .overlay { ProgressView().tint(.white).shadow(radius: 2) }
+                .opacity(0.4)
+                .allowsHitTesting(false)
+                .accessibilityValue(Strings.cellDeletingAccessibilityValue)
+                .disabled(true)
+        } else if viewModel.isSelectionModeActive {
+            if viewModel.canOpenDetail(for: item) {
+                let isSelected = viewModel.isSelected(item)
+                Button {
+                    viewModel.toggleSelection(for: item)
+                } label: {
+                    MediaGridCell(item: item, isAspectRatioMode: isAspectRatioMode)
+                        .overlay(alignment: .topTrailing) {
+                            selectionBadge(isSelected: isSelected)
+                                .opacity(viewModel.isPreparingBulkShare ? 0.5 : 1.0)
+                        }
+                }
+                .buttonStyle(.plain)
+                .disabled(viewModel.isPreparingBulkShare)
+                .accessibilityAddTraits(isSelected ? .isSelected : [])
+                .accessibilityValue(isSelected ? Strings.accessibilitySelected : Strings.accessibilityNotSelected)
+            } else {
+                MediaGridCell(item: item, isAspectRatioMode: isAspectRatioMode)
+                    .opacity(0.4)
+            }
+        } else {
+            if viewModel.canOpenDetail(for: item) {
+                Button {
+                    pushDetail(for: item)
+                } label: {
+                    MediaGridCell(item: item, isAspectRatioMode: isAspectRatioMode)
+                }
+                .buttonStyle(.plain)
+            } else {
+                MediaGridCell(item: item, isAspectRatioMode: isAspectRatioMode)
             }
         }
     }
@@ -273,6 +412,38 @@ struct MediaLibraryView: View {
         } else if viewModel.shouldDisplayEmpty {
             ContentUnavailableView(Strings.empty, systemImage: "photo.on.rectangle")
         }
+    }
+
+    @ViewBuilder private var shareToolbarButton: some View {
+        if viewModel.isPreparingBulkShare {
+            ProgressView()
+                .accessibilityLabel(Strings.shareAccessibilityPreparing)
+        } else {
+            Button {
+                viewModel.startBulkShare()
+            } label: {
+                Image(systemName: "square.and.arrow.up")
+            }
+            .accessibilityLabel(Strings.commonShare)
+            .disabled(viewModel.selectedIDs.isEmpty)
+        }
+    }
+
+    @ViewBuilder private func selectionBadge(isSelected: Bool) -> some View {
+        ZStack {
+            Circle()
+                .fill(isSelected ? Color.accentColor : Color.clear)
+                .frame(width: 24, height: 24)
+            Circle()
+                .stroke(Color.white.opacity(isSelected ? 1.0 : 0.85), lineWidth: 2)
+                .frame(width: 24, height: 24)
+            if isSelected {
+                Image(systemName: "checkmark")
+                    .font(.caption.bold())
+                    .foregroundStyle(.white)
+            }
+        }
+        .padding(6)
     }
 
     private func errorView(_ error: Error) -> some View {
