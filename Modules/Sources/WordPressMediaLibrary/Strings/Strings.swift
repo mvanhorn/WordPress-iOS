@@ -482,4 +482,90 @@ enum Strings {
         value: "Delete",
         comment: "Destructive button title in the delete-confirmation alert"
     )
+
+    // MARK: - Selection mode
+
+    static let selectionSelect = NSLocalizedString(
+        "mediaLibrary.selection.select",
+        value: "Select",
+        comment: "Nav-bar button that enters selection mode in the V2 Media Library."
+    )
+
+    static let selectionTitleEmpty = NSLocalizedString(
+        "mediaLibrary.selection.title.empty",
+        value: "Select Items",
+        comment: "Bottom toolbar title shown in selection mode when no items are selected."
+    )
+
+    static let selectionTitleImageSingular = NSLocalizedString(
+        "mediaLibrary.selection.title.image.singular",
+        value: "%1$d Image Selected",
+        comment: "Bottom toolbar title when exactly one image is selected. %1$d is the count (always 1 here)."
+    )
+
+    static let selectionTitleImagePlural = NSLocalizedString(
+        "mediaLibrary.selection.title.image.plural",
+        value: "%1$d Images Selected",
+        comment: "Bottom toolbar title when 2+ images are selected. %1$d is the count."
+    )
+
+    static let selectionTitleItemSingular = NSLocalizedString(
+        "mediaLibrary.selection.title.item.singular",
+        value: "%1$d Item Selected",
+        comment: "Bottom toolbar title when exactly one item is selected (mixed or non-image)."
+    )
+
+    static let selectionTitleItemPlural = NSLocalizedString(
+        "mediaLibrary.selection.title.item.plural",
+        value: "%1$d Items Selected",
+        comment: "Bottom toolbar title when 2+ items are selected (mixed or non-image)."
+    )
+
+    static let selectionDeleteConfirmationOne = NSLocalizedString(
+        "mediaLibrary.selection.deleteConfirmation.one",
+        value: "Are you sure you want to permanently delete this item?",
+        comment: "Confirmation dialog title when deleting exactly one item from the V2 Media Library."
+    )
+
+    static let selectionDeleteConfirmationMany = NSLocalizedString(
+        "mediaLibrary.selection.deleteConfirmation.many",
+        value: "Are you sure you want to permanently delete these items?",
+        comment: "Confirmation dialog title when deleting multiple items from the V2 Media Library."
+    )
+
+    static let selectionDeleteAction = NSLocalizedString(
+        "mediaLibrary.selection.deleteAction",
+        value: "Delete",
+        comment: "Destructive action label inside the bulk-delete confirmation dialog."
+    )
+
+    static let selectionDeleteAccessibilityLabel = NSLocalizedString(
+        "mediaLibrary.selection.delete.accessibilityLabel",
+        value: "Delete selected items",
+        comment: "VoiceOver label for the icon-only Trash button in the selection-mode bottom toolbar."
+    )
+
+    static let accessibilitySelected = NSLocalizedString(
+        "mediaLibrary.selection.accessibility.selected",
+        value: "Selected",
+        comment: "VoiceOver value for a cell whose checkmark badge is on in selection mode."
+    )
+
+    static let accessibilityNotSelected = NSLocalizedString(
+        "mediaLibrary.selection.accessibility.notSelected",
+        value: "Not selected",
+        comment: "VoiceOver value for a cell whose checkmark badge is off in selection mode."
+    )
+
+    static let shareAccessibilityPreparing = NSLocalizedString(
+        "mediaLibrary.selection.share.accessibility.preparing",
+        value: "Preparing items to share",
+        comment: "VoiceOver label for the inline progress indicator while a bulk share is downloading."
+    )
+
+    static let cellDeletingAccessibilityValue = NSLocalizedString(
+        "mediaLibrary.selection.cell.accessibility.deleting",
+        value: "Deleting",
+        comment: "VoiceOver value appended to a cell that has an in-flight delete request."
+    )
 }

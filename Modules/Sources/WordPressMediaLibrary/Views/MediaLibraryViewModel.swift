@@ -8,7 +8,7 @@ import WordPressCore
 /// App-target switches that gate which detail screen affordances are
 /// available. Public so app-side routing can populate it without going
 /// through the (internal) view model type.
-public struct MediaLibraryCapabilities: Equatable {
+public struct MediaLibraryCapabilities: Equatable, Sendable {
     public let supportsAltEditing: Bool
     public let supportsMetadataEditing: Bool
     public let supportsDeletion: Bool
@@ -22,6 +22,18 @@ public struct MediaLibraryCapabilities: Equatable {
         self.supportsMetadataEditing = supportsMetadataEditing
         self.supportsDeletion = supportsDeletion
     }
+}
+
+extension MediaLibraryCapabilities {
+    /// Test-only default with all three capability flags `true`. Lives
+    /// here (not behind `#if DEBUG`) because the test-only initializer
+    /// of `MediaLibraryViewModel` is itself compiled unconditionally
+    /// and uses this as a default parameter value.
+    static let testDefault = MediaLibraryCapabilities(
+        supportsAltEditing: true,
+        supportsMetadataEditing: true,
+        supportsDeletion: true
+    )
 }
 
 /// Backs a single media grid: the library (no query) or one search query.
