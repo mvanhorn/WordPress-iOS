@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import OrderedCollections
 import SwiftUI
 import WordPressAPI
 import WordPressAPIInternal
@@ -58,6 +59,13 @@ final class MediaLibraryViewModel: ObservableObject {
     /// payload without re-fetching. Rebuilt on every `loadItems` snapshot.
     private var resolvedMediaByID: [Int64: MediaWithEditContext] = [:]
 
+    /// Test-only override for the client-presence half of `canOpenDetail`.
+    /// Does not bypass the resolved-payload half: `resolvedMediaByID[id]`
+    /// still has to be non-nil. Declared without `#if DEBUG` because
+    /// `canOpenDetail` itself is unconditional production code that reads
+    /// the property; a DEBUG guard would break non-DEBUG builds.
+    var testOverrideHasClient: Bool?
+
     @Published private(set) var bannerSummary: BannerSummary?
     @Published private(set) var uploadsScreenItems: [UploadRowItem] = []
 
@@ -87,6 +95,71 @@ final class MediaLibraryViewModel: ObservableObject {
     @Published private(set) var kind: MediaKind?
     @Published private(set) var error: Error?
     @Published private(set) var isLoadComplete = false
+
+    // MARK: - Selection state (M5)
+
+    @Published private(set) var isSelectionModeActive: Bool = false
+
+    /// Insertion-ordered set of selected media ids. Read by the view for
+    /// badge state, by `selectionToolbarTitle`, and by the bulk-action
+    /// methods. Iteration order is consumed by bulk share to preserve the
+    /// user's tap order when assembling the activity items.
+    @Published private(set) var selectedIDs = OrderedSet<Int64>()
+
+    /// In-flight delete markers, dims + spinners + disables hit testing
+    /// on the corresponding cells. Cleared inside `performDelete`'s `defer`
+    /// (both success and failure paths) for pagination safety.
+    @Published private(set) var pendingDeleteIDs: Set<Int64> = []
+
+    /// Bulk-share state machine. `.preparing` while
+    /// `MediaDetailShareService.downloadForSharing(items:)` runs. Reset to
+    /// `.idle` on completion, failure, cancellation, or `exitSelectionMode()`.
+    @Published private(set) var bulkShareState: BulkShareState = .idle
+
+    /// Identity for the currently-active bulk-share download. The view's
+    /// `.task(id: bulkShareRequest?.id)` modifier owns the download task;
+    /// flipping the id to nil cancels it cooperatively.
+    @Published private(set) var bulkShareRequest: BulkShareRequest?
+
+    /// Activity-sheet payload. Set by `performBulkShare` on success;
+    /// presented via `.sheet(item:)`. Nilled in `reportShareDismissed` or
+    /// `exitSelectionMode`.
+    @Published var sharePayload: MediaDetailViewModel.SharePayload?
+
+    /// Toggle-time payload snapshot, keyed by media id. Survives
+    /// `loadItems` rebuilds of `resolvedMediaByID`, so a selection that
+    /// spans pages remains shareable after a page-1 refresh. Not
+    /// `@Published`; the view never reads it directly. Bulk-share-item
+    /// construction reads it.
+    private var selectedMediaSnapshots: [Int64: MediaWithEditContext] = [:]
+
+    /// V1 parity title: five variants for empty / image-singular / image-plural
+    /// / item-singular / item-plural. Reads `selectedMediaSnapshots` for the
+    /// image-vs-mixed decision so the lookup is cheap and survives refresh.
+    var selectionToolbarTitle: String {
+        let count = selectedIDs.count
+        if count == 0 { return Strings.selectionTitleEmpty }
+        if allSelectedAreImages {
+            let template = count == 1 ? Strings.selectionTitleImageSingular : Strings.selectionTitleImagePlural
+            return String.localizedStringWithFormat(template, count)
+        }
+        let template = count == 1 ? Strings.selectionTitleItemSingular : Strings.selectionTitleItemPlural
+        return String.localizedStringWithFormat(template, count)
+    }
+
+    private var allSelectedAreImages: Bool {
+        guard !selectedIDs.isEmpty else { return false }
+        return selectedIDs.allSatisfy { id in
+            selectedMediaSnapshots[id]?.mimeType.hasPrefix("image/") == true
+        }
+    }
+
+    enum BulkShareState: Equatable { case idle, preparing }
+
+    struct BulkShareRequest: Identifiable {
+        let id = UUID()
+        let items: [DownloadableMediaItem]
+    }
 
     /// Guards re-entrant loads. Safe because each instance owns one collection,
     /// so a skipped re-entrant call never loses a distinct load.
@@ -258,11 +331,56 @@ final class MediaLibraryViewModel: ObservableObject {
 
     func setKind(_ newKind: MediaKind?) {
         guard kind != newKind else { return }
+        if isSelectionModeActive {
+            exitSelectionMode()
+        }
         withAnimation {
             kind = newKind
             displayItems = Self.applyingKindFilter(items, kind: newKind)
         }
         tracker.track(.mediaLibraryFilterChanged(kind: newKind))
+    }
+
+    // MARK: - Selection mode (M5)
+
+    func enterSelectionMode() {
+        isSelectionModeActive = true
+    }
+
+    func exitSelectionMode() {
+        // Reset bulkShareState alongside bulkShareRequest. Without this, a
+        // Done tap before SwiftUI enters `.task(id:)`'s body would leave
+        // bulkShareState stuck at .preparing. Nils sharePayload too, closes
+        // the race where downloads finish and the activity sheet is about
+        // to present when the user taps Done.
+        bulkShareState = .idle
+        bulkShareRequest = nil
+        sharePayload = nil
+        isSelectionModeActive = false
+        selectedIDs.removeAll()
+        selectedMediaSnapshots.removeAll()
+    }
+
+    /// Toggles the item's id in `selectedIDs` and captures/clears its
+    /// payload snapshot in `selectedMediaSnapshots`. No-op for items where
+    /// `canOpenDetail` returns false (placeholders, error rows without
+    /// cached payload). Reads `resolvedMediaByID[item.id]` for the snapshot
+    /// payload at toggle time; that payload then survives subsequent
+    /// refreshes / pagination changes that mutate `resolvedMediaByID`.
+    func toggleSelection(for item: MediaGridItem) {
+        guard canOpenDetail(for: item) else { return }
+        guard let media = resolvedMediaByID[item.id] else { return }
+        if selectedIDs.contains(item.id) {
+            selectedIDs.remove(item.id)
+            selectedMediaSnapshots[item.id] = nil
+        } else {
+            selectedIDs.append(item.id)
+            selectedMediaSnapshots[item.id] = media
+        }
+    }
+
+    func isSelected(_ item: MediaGridItem) -> Bool {
+        selectedIDs.contains(item.id)
     }
 
     // MARK: Load (eager)
@@ -288,7 +406,14 @@ final class MediaLibraryViewModel: ObservableObject {
                     break
                 }
             }
-            if !Task.isCancelled { isLoadComplete = true }
+            if !Task.isCancelled {
+                isLoadComplete = true
+                // Now that every page is loaded, drop any selection that points
+                // at an item the server no longer returns (e.g. deleted from
+                // another device). reload()'s own reconcile is a no-op until this
+                // flag flips, so the final pass has to happen here.
+                reconcileSelection()
+            }
         } catch {
             if !(error is CancellationError), !Task.isCancelled {
                 Loggers.mediaLibrary.error("Media library load failed: \(error)")
@@ -336,6 +461,7 @@ final class MediaLibraryViewModel: ObservableObject {
                 items = metadataItems.map(MediaGridItem.init(item:))
                 displayItems = Self.applyingKindFilter(items, kind: kind)
             }
+            reconcileSelection()
         } catch {
             if !(error is CancellationError) {
                 Loggers.mediaLibrary.error("Failed to load items: \(error)")
@@ -343,13 +469,54 @@ final class MediaLibraryViewModel: ObservableObject {
         }
     }
 
+    /// Drops any selected id (and its share snapshot) that the loaded item set
+    /// no longer contains, so the toolbar count can't strand a ghost the user
+    /// can't deselect and bulk share can't 404 on a deleted item's stale URL.
+    /// Guarded on `isLoadComplete`: during initial load / pagination `items`
+    /// holds only a partial set, and pruning there would drop a legitimate
+    /// selection on a not-yet-loaded page (the share snapshot deliberately
+    /// survives pagination). Once every page is loaded, an absent id is a real
+    /// deletion.
+    private func reconcileSelection() {
+        guard isLoadComplete, !selectedIDs.isEmpty else { return }
+        let liveIDs = Set(items.map(\.id))
+        let staleIDs = selectedIDs.filter { !liveIDs.contains($0) }
+        guard !staleIDs.isEmpty else { return }
+        for id in staleIDs {
+            selectedIDs.remove(id)
+            selectedMediaSnapshots[id] = nil
+        }
+    }
+
     // MARK: Detail navigation
 
-    /// Cheap check for whether the cell should render as tappable.
-    /// Mirrors the early-out conditions in `makeDetailVM(for:)` without
-    /// constructing the throwaway detail VM on every cell render.
+    /// Test-only: replace the private `resolvedMediaByID` map and rebuild
+    /// `items`. Simulates the cache mutation that production `reload()`
+    /// would otherwise perform. The `test`-prefixed name flags intent;
+    /// production code does not call this. Declared unconditional for the
+    /// same reason as `testOverrideHasClient`.
+    func testReplaceResolvedMedia(_ resolved: [Int64: MediaWithEditContext]) {
+        self.resolvedMediaByID = resolved
+        self.items = resolved.map { id, media in
+            MediaGridItem(media: media, id: id, state: .loaded(isUpToDate: true))
+        }
+    }
+
+    /// Cheap check for whether the cell should render as tappable. Mirrors
+    /// the early-out conditions in `makeDetailVM(for:)` without
+    /// constructing the throwaway detail VM on every cell render. Tests
+    /// can set `testOverrideHasClient = true` to flip the client gate
+    /// open; the resolved-payload check applies regardless.
     func canOpenDetail(for item: MediaGridItem) -> Bool {
         detailNavigator != nil && resolvedMediaByID[item.id] != nil
+    }
+
+    /// Whether Select should be enabled. Evaluated over `displayItems` (the
+    /// kind-filtered grid the user actually sees), not the unfiltered `items`,
+    /// so Select can't enter selection mode over an empty filtered grid. The
+    /// `contains` short-circuits on the first openable item.
+    var canEnterSelectionMode: Bool {
+        displayItems.contains { canOpenDetail(for: $0) }
     }
 
     /// Builds a `MediaDetailViewModel` for the tapped cell. Returns nil when

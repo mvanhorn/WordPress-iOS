@@ -91,6 +91,12 @@ actor BlockingAndThenFailFakeUploadTransport: MediaUploadTransport {
 
 // MARK: - MediaWithEditContext fixture
 
+private final class TestMediaDetails: MediaDetails {
+    override func parseAsMimeType(mimeType: String) -> MediaDetailsPayload? {
+        nil
+    }
+}
+
 extension MediaWithEditContext {
     static func fixture(
         id: Int64 = 9999,
@@ -123,7 +129,7 @@ extension MediaWithEditContext {
             description: MediaDescriptionWithEditContext(raw: "", rendered: ""),
             mediaType: .file,
             mimeType: mimeType,
-            mediaDetails: MediaDetails(noHandle: .init()),
+            mediaDetails: TestMediaDetails(noHandle: .init()),
             postId: nil,
             sourceUrl: sourceUrl,
             missingImageSizes: []
@@ -156,6 +162,41 @@ func makeAllowEverythingPolicy() -> MediaUploadPolicy {
         videoOutputContentType: .mpeg4Movie,
         stripImageLocation: false
     )
+}
+
+/// Builds a `MediaUploader` with the existing test fakes
+/// (`FakeUploadTransport` + `makeAllowEverythingPolicy()`). Used by
+/// selection/share tests where the upload pipeline is incidental. The
+/// tests don't drive uploads, they just need a non-nil uploader to
+/// instantiate the view model.
+@MainActor
+func makeSelectionUploader() -> MediaUploader {
+    MediaUploader(transport: FakeUploadTransport(), policy: makeAllowEverythingPolicy())
+}
+
+@MainActor
+func makeSelectionVM(
+    tracker: any MediaTracker = MockMediaTracker(),
+    uploader: MediaUploader? = nil,
+    shareService: (any MediaDetailShareService)? = nil,
+    resolvedMedia: [Int64: MediaWithEditContext] = [:]
+) -> MediaLibraryViewModel {
+    // Use the test-only initializer. If shareService is nil, let the VM's
+    // own default (NoOpShareService) apply.
+    if let shareService {
+        return MediaLibraryViewModel(
+            tracker: tracker,
+            uploader: uploader ?? makeSelectionUploader(),
+            shareService: shareService,
+            resolvedMedia: resolvedMedia
+        )
+    } else {
+        return MediaLibraryViewModel(
+            tracker: tracker,
+            uploader: uploader ?? makeSelectionUploader(),
+            resolvedMedia: resolvedMedia
+        )
+    }
 }
 
 // MARK: - Mock materializer
