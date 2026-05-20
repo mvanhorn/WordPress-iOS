@@ -379,6 +379,69 @@ final class MediaLibraryViewModel: ObservableObject {
         }
     }
 
+    // MARK: - Bulk delete (M5)
+
+    /// Fire-and-forget bulk delete. Selection mode exits immediately on
+    /// confirm; per-cell dim+spinner indicates in-flight deletes. Both
+    /// success and failure clear the pending marker in `performDelete`'s
+    /// `defer` (both success and failure paths) for pagination safety.
+    func confirmBulkDelete() async {
+        guard let client else { return }
+        let ids = Array(selectedIDs)
+        guard !ids.isEmpty else { return }
+
+        pendingDeleteIDs.formUnion(ids)
+        exitSelectionMode()
+
+        let service: WpService
+        do {
+            service = try await client.service
+        } catch {
+            Loggers.mediaLibrary.error("Bulk delete: client resolve failed: \(error)")
+            pendingDeleteIDs.subtract(ids)
+            return
+        }
+
+        let successCount = await withTaskGroup(of: Bool.self) { group in
+            let maxConcurrent = 3
+            var iterator = ids.makeIterator()
+
+            func submit(_ id: Int64) {
+                group.addTask { [weak self] in
+                    await self?.performDelete(id: id, service: service) ?? false
+                }
+            }
+            for _ in 0..<maxConcurrent {
+                if let id = iterator.next() { submit(id) }
+            }
+
+            var successes = 0
+            while let didSucceed = await group.next() {
+                if didSucceed { successes += 1 }
+                if let id = iterator.next() { submit(id) }
+            }
+            return successes
+        }
+
+        if successCount > 0 {
+            tracker.track(.mediaLibraryDeletedItems(count: successCount))
+        }
+    }
+
+    /// One delete attempt. Returns `true` on success. `defer` clears the
+    /// pending marker on both paths synchronously. `MediaLibraryViewModel`
+    /// is `@MainActor`, so direct mutation is safe; no nested Task is needed.
+    private func performDelete(id: Int64, service: WpService) async -> Bool {
+        defer { pendingDeleteIDs.remove(id) }
+        do {
+            _ = try await service.media().deleteMediaPermanently(mediaId: MediaId(id))
+            return true
+        } catch {
+            Loggers.mediaLibrary.error("Bulk delete failed for id \(id): \(error)")
+            return false
+        }
+    }
+
     func isSelected(_ item: MediaGridItem) -> Bool {
         selectedIDs.contains(item.id)
     }
