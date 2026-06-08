@@ -25,18 +25,6 @@ public struct MediaLibraryCapabilities: Equatable, Sendable {
     }
 }
 
-extension MediaLibraryCapabilities {
-    /// Test-only default with all three capability flags `true`. Lives
-    /// here (not behind `#if DEBUG`) because the test-only initializer
-    /// of `MediaLibraryViewModel` is itself compiled unconditionally
-    /// and uses this as a default parameter value.
-    static let testDefault = MediaLibraryCapabilities(
-        supportsAltEditing: true,
-        supportsMetadataEditing: true,
-        supportsDeletion: true
-    )
-}
-
 /// Backs a single media grid: the library (no query) or one search query.
 /// Owns exactly one collection. The library instance also drives the
 /// client-side `kind` filter; the search instance leaves `kind` nil, so its
@@ -58,13 +46,6 @@ final class MediaLibraryViewModel: ObservableObject {
     /// `makeDetailVM(for:)` can hand the detail screen a fully-resolved
     /// payload without re-fetching. Rebuilt on every `loadItems` snapshot.
     private var resolvedMediaByID: [Int64: MediaWithEditContext] = [:]
-
-    /// Test-only override for the client-presence half of `canOpenDetail`.
-    /// Does not bypass the resolved-payload half: `resolvedMediaByID[id]`
-    /// still has to be non-nil. Declared without `#if DEBUG` because
-    /// `canOpenDetail` itself is unconditional production code that reads
-    /// the property; a DEBUG guard would break non-DEBUG builds.
-    var testOverrideHasClient: Bool?
 
     @Published private(set) var bannerSummary: BannerSummary?
     @Published private(set) var uploadsScreenItems: [UploadRowItem] = []
@@ -395,7 +376,6 @@ final class MediaLibraryViewModel: ObservableObject {
     /// wholesale or partial failure surfaces `bulkDeleteErrorMessage` (the
     /// detail screen has an equivalent delete-failure alert).
     func confirmBulkDelete() async {
-        guard let client else { return }
         let ids = Array(selectedIDs)
         guard !ids.isEmpty else { return }
 
@@ -666,23 +646,9 @@ final class MediaLibraryViewModel: ObservableObject {
 
     // MARK: Detail navigation
 
-    /// Test-only: replace the private `resolvedMediaByID` map and rebuild
-    /// `items`. Simulates the cache mutation that production `reload()`
-    /// would otherwise perform. The `test`-prefixed name flags intent;
-    /// production code does not call this. Declared unconditional for the
-    /// same reason as `testOverrideHasClient`.
-    func testReplaceResolvedMedia(_ resolved: [Int64: MediaWithEditContext]) {
-        self.resolvedMediaByID = resolved
-        self.items = resolved.map { id, media in
-            MediaGridItem(media: media, id: id, state: .loaded(isUpToDate: true))
-        }
-    }
-
     /// Cheap check for whether the cell should render as tappable. Mirrors
     /// the early-out conditions in `makeDetailVM(for:)` without
-    /// constructing the throwaway detail VM on every cell render. Tests
-    /// can set `testOverrideHasClient = true` to flip the client gate
-    /// open; the resolved-payload check applies regardless.
+    /// constructing the throwaway detail VM on every cell render.
     func canOpenDetail(for item: MediaGridItem) -> Bool {
         detailNavigator != nil && resolvedMediaByID[item.id] != nil
     }
