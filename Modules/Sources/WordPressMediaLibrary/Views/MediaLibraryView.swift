@@ -15,6 +15,11 @@ struct MediaLibraryView: View {
     let client: WordPressClient
     let tracker: any MediaTracker
     var externalPickerOptions: [ExternalMediaPickerOption] = []
+    /// When the host app shows a bottom tab bar (e.g. Jetpack), the search
+    /// field minimizes into a toolbar button so it doesn't stack a second bar
+    /// at the bottom of the screen. Without a tab bar (e.g. WordPress, iPad
+    /// split view) it stays a full-width search bar.
+    var prefersMinimizedSearchBar = false
 
     @State private var searchText = ""
     @State private var isAspectRatioMode = AspectRatioPreference.load()
@@ -92,10 +97,25 @@ struct MediaLibraryView: View {
             await viewModel.refresh()
         }
         .navigationTitle(Strings.title)
-        .searchable(text: $searchText, prompt: Strings.searchPrompt)
-        .minimizedSearchToolbarBehavior()
+        // Search is suppressed entirely in selection mode: leaving it live let
+        // the user swap to the search results view while the selection toolbar
+        // (and its trash/share actions) kept operating on now-off-screen items,
+        // and on iOS 26 the minimized search capsule also collided with the
+        // bottom selection bar. Clearing searchText on entry guarantees the
+        // library grid (not stale search results) is what's selected against.
+        .modifier(
+            SelectionAwareSearch(
+                isSuppressed: viewModel.isSelectionModeActive,
+                text: $searchText,
+                prompt: Strings.searchPrompt,
+                minimized: prefersMinimizedSearchBar
+            )
+        )
         .autocorrectionDisabled()
         .textInputAutocapitalization(.never)
+        .onChange(of: viewModel.isSelectionModeActive) { _, isActive in
+            if isActive { searchText = "" }
+        }
         .toolbar {
             if viewModel.isSelectionModeActive {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -463,13 +483,35 @@ struct MediaLibraryView: View {
     }
 }
 
+/// Applies `.searchable` (and the iOS 26 minimize behavior) only when search is
+/// not suppressed. Selection mode suppresses it so the search field can't stay
+/// live underneath the selection toolbar; when `isSuppressed` flips, SwiftUI
+/// adds/removes the search field wholesale.
+private struct SelectionAwareSearch: ViewModifier {
+    let isSuppressed: Bool
+    @Binding var text: String
+    let prompt: String
+    let minimized: Bool
+
+    func body(content: Content) -> some View {
+        if isSuppressed {
+            content
+        } else {
+            content
+                .searchable(text: $text, prompt: prompt)
+                .minimizedSearchToolbarBehavior(minimized)
+        }
+    }
+}
+
 private extension View {
-    /// Collapses the `.searchable` field into a navigation-bar button that
-    /// expands on tap, matching the legacy Media screen. The `.minimize`
+    /// Collapses the `.searchable` field into a toolbar button that expands on
+    /// tap. Only applied when `isMinimized` is true (host app has a bottom tab
+    /// bar); otherwise the search field stays a full-width bar. The `.minimize`
     /// behavior is iOS 26+, so this is a no-op on earlier versions.
     @ViewBuilder
-    func minimizedSearchToolbarBehavior() -> some View {
-        if #available(iOS 26, *) {
+    func minimizedSearchToolbarBehavior(_ isMinimized: Bool) -> some View {
+        if #available(iOS 26, *), isMinimized {
             searchToolbarBehavior(.minimize)
         } else {
             self

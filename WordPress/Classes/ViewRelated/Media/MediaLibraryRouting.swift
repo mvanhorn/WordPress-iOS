@@ -47,6 +47,12 @@ enum MediaLibraryRouting {
             supportsDeletion: blog.supports(.mediaDeletion)
         )
 
+        // Minimize the search field only when the host shows a bottom tab bar
+        // (e.g. Jetpack's WPTabBarController), so it doesn't stack a second bar
+        // below the grid. WordPress's sidebar and the iPad split view aren't
+        // tab bar controllers, so they keep the full-width search bar.
+        let prefersMinimizedSearchBar = RootViewCoordinator.sharedPresenter.rootViewController is UITabBarController
+
         let hostingController = MediaLibraryHostingController.make(
             client: client,
             tracker: tracker,
@@ -55,7 +61,8 @@ enum MediaLibraryRouting {
             shareService: shareService,
             navigator: navigator,
             capabilities: capabilities,
-            externalPickerOptions: externalPickerOptions(for: blog)
+            externalPickerOptions: externalPickerOptions(for: blog),
+            prefersMinimizedSearchBar: prefersMinimizedSearchBar
         )
         urlOpener.attach(host: hostingController)
         navigator.attach(host: hostingController)

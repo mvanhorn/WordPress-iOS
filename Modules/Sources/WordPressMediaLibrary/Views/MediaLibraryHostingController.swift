@@ -18,7 +18,8 @@ public enum MediaLibraryHostingController {
         shareService: any MediaDetailShareService,
         navigator: any MediaDetailNavigator,
         capabilities: MediaLibraryCapabilities,
-        externalPickerOptions: [ExternalMediaPickerOption] = []
+        externalPickerOptions: [ExternalMediaPickerOption] = [],
+        prefersMinimizedSearchBar: Bool = false
     ) -> UIViewController {
         let view = MediaLibraryContainerView(
             client: client,
@@ -28,7 +29,8 @@ public enum MediaLibraryHostingController {
             shareService: shareService,
             navigator: navigator,
             capabilities: capabilities,
-            externalPickerOptions: externalPickerOptions
+            externalPickerOptions: externalPickerOptions,
+            prefersMinimizedSearchBar: prefersMinimizedSearchBar
         )
         let host = UIHostingController(rootView: view)
         host.navigationItem.largeTitleDisplayMode = .never
@@ -51,6 +53,7 @@ private struct MediaLibraryContainerView: View {
     let navigator: any MediaDetailNavigator
     let capabilities: MediaLibraryCapabilities
     let externalPickerOptions: [ExternalMediaPickerOption]
+    let prefersMinimizedSearchBar: Bool
 
     @State private var resolved: Resolved?
     @State private var error: Error?
@@ -70,7 +73,8 @@ private struct MediaLibraryContainerView: View {
                     service: resolved.service,
                     client: client,
                     tracker: tracker,
-                    externalPickerOptions: externalPickerOptions
+                    externalPickerOptions: externalPickerOptions,
+                    prefersMinimizedSearchBar: prefersMinimizedSearchBar
                 )
             } else if let error {
                 EmptyStateView.failure(error: error) {
