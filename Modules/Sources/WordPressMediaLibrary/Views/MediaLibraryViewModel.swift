@@ -337,16 +337,14 @@ final class MediaLibraryViewModel: ObservableObject {
     /// Mirrors the early-out conditions in `makeDetailVM(for:)` without
     /// constructing the throwaway detail VM on every cell render.
     func canOpenDetail(for item: MediaGridItem) -> Bool {
-        client != nil && detailNavigator != nil && resolvedMediaByID[item.id] != nil
+        detailNavigator != nil && resolvedMediaByID[item.id] != nil
     }
 
     /// Builds a `MediaDetailViewModel` for the tapped cell. Returns nil when
-    /// the cell carries no resolvable payload (placeholder states), when the
-    /// test-only init was used (no `WordPressClient`), or when the instance
-    /// has no detail wiring (e.g. a search-results grid).
+    /// the cell carries no resolvable payload (placeholder states), or when the
+    /// instance has no detail wiring (e.g. a search-results grid).
     func makeDetailVM(for item: MediaGridItem) -> MediaDetailViewModel? {
-        guard let client,
-            let urlOpener,
+        guard let urlOpener,
             let shareService,
             let detailNavigator,
             let detailCapabilities,
