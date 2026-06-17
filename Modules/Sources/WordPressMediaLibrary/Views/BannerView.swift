@@ -30,11 +30,13 @@ struct BannerView: View {
     private var label: String {
         switch (summary.pendingCount, summary.failedCount) {
         case (let p, 0) where p > 0:
-            return String.localizedStringWithFormat(Strings.uploadBannerUploadingOnly, p)
+            let template = p == 1 ? Strings.uploadBannerUploadingOnlySingle : Strings.uploadBannerUploadingOnly
+            return String.localizedStringWithFormat(template, p)
         case (let p, let f) where p > 0 && f > 0:
             return String.localizedStringWithFormat(Strings.uploadBannerMixed, p, f)
         case (0, let f) where f > 0:
-            return String.localizedStringWithFormat(Strings.uploadBannerFailedOnly, f)
+            let template = f == 1 ? Strings.uploadBannerFailedOnlySingle : Strings.uploadBannerFailedOnly
+            return String.localizedStringWithFormat(template, f)
         default:
             return ""
         }

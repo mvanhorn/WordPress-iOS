@@ -33,7 +33,7 @@ struct UploadsView: View {
             Button(Strings.uploadBulkCancelAllConfirm, role: .destructive) {
                 Task { await viewModel.cancelAllUploads() }
             }
-            Button(Strings.cancel, role: .cancel) {}
+            Button(Strings.keepUploading, role: .cancel) {}
         } message: {
             Text(Strings.uploadBulkCancelAllMessage)
         }
